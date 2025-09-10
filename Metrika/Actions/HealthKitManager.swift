@@ -1,103 +1,145 @@
 import Foundation
 import HealthKit
+import Combine
 
-class HealthKitManager {
+class HealthKitManager: ObservableObject {
     
-    let store = HKHealthStore()
+    let healthStore = HKHealthStore()
     
-    let typesToRead: Set<HKObjectType> = [
-        HKObjectType.quantityType(forIdentifier: .bodyMass)!,
-        HKObjectType.quantityType(forIdentifier: .dietaryWater)!
-    ]
+    // MARK: - Autorização
     
-    let typesToWrite: Set<HKSampleType> = [
-        HKObjectType.quantityType(forIdentifier: .bodyMass)!,
-        HKObjectType.quantityType(forIdentifier: .dietaryWater)!
-    ]
-    
+    /// Pede autorização ao utilizador para ler e escrever os dados de saúde necessários.
     func requestAuthorization(completion: @escaping (Bool) -> Void) {
+        // Tipos de dados que queremos ler
+        let typesToRead: Set = [
+            HKObjectType.quantityType(forIdentifier: .bodyMass)!,
+            HKObjectType.quantityType(forIdentifier: .dietaryWater)!
+        ]
+        
+        // Tipos de dados que queremos escrever
+        let typesToWrite: Set = [
+            HKObjectType.quantityType(forIdentifier: .bodyMass)!,
+            HKObjectType.quantityType(forIdentifier: .dietaryWater)!
+        ]
+        
+        // Verifica se o HealthKit está disponível no dispositivo.
         guard HKHealthStore.isHealthDataAvailable() else {
             completion(false)
             return
         }
         
-        store.requestAuthorization(toShare: typesToWrite, read: typesToRead) { (success, error) in
-            if let error = error {
-                print("Erro ao pedir autorização para o HealthKit: \(error.localizedDescription)")
-            }
+        healthStore.requestAuthorization(toShare: typesToWrite, read: typesToRead) { (success, error) in
             completion(success)
         }
     }
     
-    // MARK: - Funções de Leitura de Dados
+    // MARK: - Funções de Leitura (Fetch)
     
-    /// Busca a amostra de peso mais recente registada no HealthKit.
+    /// Busca a última amostra de peso registada.
     func fetchLatestWeight(completion: @escaping (HKQuantitySample?) -> Void) {
-        // 1. Define o tipo de dado que queremos: massa corporal (peso).
         guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
             completion(nil)
             return
         }
         
-        // 2. Define a ordem de ordenação: o mais recente primeiro.
         let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
-        
-        // 3. Cria a query para buscar apenas 1 resultado, ordenado pelo mais recente.
         let query = HKSampleQuery(sampleType: weightType, predicate: nil, limit: 1, sortDescriptors: [sortDescriptor]) { (query, samples, error) in
-            if let error = error {
-                print("Erro ao buscar o peso: \(error.localizedDescription)")
-                completion(nil)
-                return
-            }
-            // 4. Retorna o primeiro resultado encontrado (que será o mais recente).
             completion(samples?.first as? HKQuantitySample)
         }
         
-        // 5. Executa a query.
-        store.execute(query)
+        healthStore.execute(query)
     }
     
-    /// Soma toda a água registada no dia de hoje.
+    /// Busca o total de água consumida no dia de hoje.
     func fetchTodayWaterIntake(completion: @escaping (Double) -> Void) {
         guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
             completion(0)
             return
         }
-
+        
         let calendar = Calendar.current
-        // Define o intervalo de tempo: do início do dia de hoje até agora.
-        let startDate = calendar.startOfDay(for: Date())
-        let endDate = Date()
-
-        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
-
-        // Cria uma query de estatística para somar todos os valores.
+        let today = calendar.startOfDay(for: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: today, end: nil, options: .strictStartDate)
+        
         let query = HKStatisticsQuery(quantityType: waterType, quantitySamplePredicate: predicate, options: .cumulativeSum) { (_, result, error) in
-            if let error = error {
-                print("Erro ao buscar a ingestão de água: \(error.localizedDescription)")
-                completion(0)
-                return
-            }
-            
-            // Pega a soma total.
-            guard let sum = result?.sumQuantity() else {
-                completion(0)
-                return
-            }
-            
-            // Retorna o valor em litros.
-            completion(sum.doubleValue(for: .liter()))
+            let totalLitros = result?.sumQuantity()?.doubleValue(for: .liter()) ?? 0
+            completion(totalLitros)
         }
-
-        store.execute(query)
+        
+        healthStore.execute(query)
     }
     
-    // MARK: - Funções de Escrita de Dados
+    /// Busca o histórico de amostras de peso dos últimos 30 dias.
+    func fetchWeightHistory(completion: @escaping ([HKQuantitySample]) -> Void) {
+        guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
+            completion([])
+            return
+        }
+        
+        let calendar = Calendar.current
+        let startDate = calendar.date(byAdding: .day, value: -30, to: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: nil, options: .strictStartDate)
+        let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+        
+        let query = HKSampleQuery(sampleType: weightType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sortDescriptor]) { (query, samples, error) in
+            guard let samples = samples as? [HKQuantitySample] else {
+                completion([])
+                return
+            }
+            completion(samples)
+        }
+        
+        healthStore.execute(query)
+    }
     
-    /// Salva uma nova amostra de peso no HealthKit.
+    /// Busca o histórico de consumo de água dos últimos 30 dias, agrupado por dia.
+    func fetchWaterIntakeHistory(completion: @escaping ([Date: Double]) -> Void) {
+        guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
+            completion([:])
+            return
+        }
+        
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let startDate = calendar.date(byAdding: .day, value: -30, to: today) else {
+            completion([:])
+            return
+        }
+
+        var dailyTotals: [Date: Double] = [:]
+        // Inicializa os dias para garantir que os dias sem consumo apareçam
+        for i in 0..<30 {
+            if let date = calendar.date(byAdding: .day, value: i, to: startDate) {
+                dailyTotals[date] = 0.0
+            }
+        }
+        
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: nil, options: .strictStartDate)
+        
+        let query = HKSampleQuery(sampleType: waterType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { (query, samples, error) in
+            guard let samples = samples as? [HKQuantitySample] else {
+                completion(dailyTotals)
+                return
+            }
+            
+            // Agrupa as amostras por dia
+            for sample in samples {
+                let date = calendar.startOfDay(for: sample.startDate)
+                let value = sample.quantity.doubleValue(for: .liter())
+                dailyTotals[date, default: 0.0] += value
+            }
+            
+            completion(dailyTotals)
+        }
+        
+        healthStore.execute(query)
+    }
+    
+    // MARK: - Funções de Escrita (Save)
+
+    /// Salva um novo registo de peso no HealthKit.
     func saveWeight(_ weightInKg: Double, date: Date, completion: @escaping (Bool) -> Void) {
         guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
-            print("Tipo de dado de massa corporal não está disponível.")
             completion(false)
             return
         }
@@ -105,14 +147,23 @@ class HealthKitManager {
         let weightQuantity = HKQuantity(unit: .gramUnit(with: .kilo), doubleValue: weightInKg)
         let weightSample = HKQuantitySample(type: weightType, quantity: weightQuantity, start: date, end: date)
         
-        store.save(weightSample) { (success, error) in
-            if let error = error {
-                print("Erro ao salvar o peso: \(error.localizedDescription)")
-            }
-            // Informa a UI se o dado foi salvo com sucesso.
-            DispatchQueue.main.async {
-                completion(success)
-            }
+        healthStore.save(weightSample) { (success, error) in
+            completion(success)
+        }
+    }
+    
+    /// Salva um novo registo de consumo de água no HealthKit.
+    func saveWaterIntake(liters: Double, date: Date, completion: @escaping (Bool) -> Void) {
+        guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
+            completion(false)
+            return
+        }
+        
+        let waterQuantity = HKQuantity(unit: .liter(), doubleValue: liters)
+        let waterSample = HKQuantitySample(type: waterType, quantity: waterQuantity, start: date, end: date)
+        
+        healthStore.save(waterSample) { (success, error) in
+            completion(success)
         }
     }
 }
