@@ -6,15 +6,18 @@ struct HidratacaoView: View {
     @State private var aguaConsumida: Double = 0.0
     @State private var metaAgua: Double = 2.0 // Meta de 2 litros
     
+    // Novas variáveis de estado para o alerta
+    @State private var isShowingCustomAlert = false
+    @State private var customAmountString = ""
+    
     var body: some View {
-        // A NavigationView foi REMOVIDA daqui
         ZStack {
             Color(UIColor.systemGroupedBackground)
                 .edgesIgnoringSafeArea(.all)
-                
+            
             ScrollView {
                 VStack(spacing: 20) {
-                    // Card de Progresso
+                    // Card de Progresso (sem alterações)
                     VStack {
                         Text("Consumo de Hoje")
                             .font(.headline)
@@ -38,7 +41,7 @@ struct HidratacaoView: View {
                     .cornerRadius(12)
                     
                     // Botões de Ação
-                    VStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 15) {
                         Text("Adicionar Água")
                             .font(.title2)
                             .fontWeight(.semibold)
@@ -51,13 +54,34 @@ struct HidratacaoView: View {
                                 adicionarAgua(litros: 0.75)
                             }
                         }
+                        
+                        // Novo botão para quantidade específica
+                        BotaoAdicionarAgua(icone: "plus.circle.fill", volume: "Outra quantidade") {
+                            isShowingCustomAlert = true
+                        }
                     }
                 }
                 .padding()
             }
         }
-        .navigationTitle("Hidratação") // Usamos o título da barra de navegação
+        .navigationTitle("Hidratação")
         .onAppear(perform: carregarDados)
+        .alert("Adicionar Quantidade", isPresented: $isShowingCustomAlert) {
+            TextField("Quantidade em ml", text: $customAmountString)
+                .keyboardType(.numberPad) // Facilita a digitação de números
+            Button("Cancelar", role: .cancel) {
+                customAmountString = "" // Limpa o campo ao cancelar
+            }
+            Button("Salvar") {
+                if let amountInML = Double(customAmountString) {
+                    let amountInLiters = amountInML / 1000.0
+                    adicionarAgua(litros: amountInLiters)
+                }
+                customAmountString = "" // Limpa o campo após salvar
+            }
+        } message: {
+            Text("Por favor, informe a quantidade de água que você bebeu em mililitros (ml).")
+        }
     }
     
     private func carregarDados() {
