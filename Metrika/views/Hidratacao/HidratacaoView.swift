@@ -1,23 +1,35 @@
 import SwiftUI
+import Charts // Adicionado para os gráficos
+import HealthKit // Adicionado para os tipos de dados
+
+// É necessário manter esta estrutura aqui para o gráfico
+struct WaterDataPoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let totalLiters: Double
+}
 
 struct HidratacaoView: View {
-    private let healthKitManager = HealthKitManager()
-    
+    @StateObject private var healthKitManager = HealthKitManager()
+
     @State private var aguaConsumida: Double = 0.0
-    @State private var metaAgua: Double = 2.0 // Meta de 2 litros
+    @State private var metaAgua: Double = 2.0
     
-    // Novas variáveis de estado para o alerta
-    @State private var isShowingCustomAlert = false
+    // Para o alerta de input personalizado
+    @State private var isShowingAlert = false
     @State private var customAmountString = ""
+    
+    // Para o gráfico
+    @State private var waterHistory: [WaterDataPoint] = []
     
     var body: some View {
         ZStack {
             Color(UIColor.systemGroupedBackground)
                 .edgesIgnoringSafeArea(.all)
-            
+                
             ScrollView {
                 VStack(spacing: 20) {
-                    // Card de Progresso (sem alterações)
+                    // Card de Progresso
                     VStack {
                         Text("Consumo de Hoje")
                             .font(.headline)
@@ -41,23 +53,55 @@ struct HidratacaoView: View {
                     .cornerRadius(12)
                     
                     // Botões de Ação
-                    VStack(alignment: .leading, spacing: 15) {
+                    VStack(alignment: .leading) {
                         Text("Adicionar Água")
                             .font(.title2)
                             .fontWeight(.semibold)
 
-                        HStack(spacing: 20) {
+                        HStack(spacing: 12) {
                             BotaoAdicionarAgua(icone: "cup.and.saucer.fill", volume: "250ml") {
                                 adicionarAgua(litros: 0.25)
                             }
                             BotaoAdicionarAgua(icone: "waterbottle.fill", volume: "750ml") {
                                 adicionarAgua(litros: 0.75)
                             }
+                            BotaoAdicionarAgua(icone: "plus.circle.fill", volume: "Outro") {
+                                isShowingAlert = true
+                            }
                         }
+                    }
+                    
+                    // GRÁFICO DE HIDRATAÇÃO
+                    VStack(alignment: .leading) {
+                        Text("Consumo de Água (Últimos 30 dias)")
+                            .font(.headline)
                         
-                        // Novo botão para quantidade específica
-                        BotaoAdicionarAgua(icone: "plus.circle.fill", volume: "Outra quantidade") {
-                            isShowingCustomAlert = true
+                        if waterHistory.isEmpty || waterHistory.allSatisfy({ $0.totalLiters == 0 }) {
+                            Text("Não há dados de hidratação para exibir.")
+                                .foregroundColor(.gray)
+                                .padding()
+                                .frame(maxWidth: .infinity, minHeight: 200)
+                                .background(Color(UIColor.systemBackground))
+                                .cornerRadius(12)
+                        } else {
+                            Chart(waterHistory) { dataPoint in
+                                BarMark(
+                                    x: .value("Data", dataPoint.date, unit: .day),
+                                    y: .value("Litros (L)", dataPoint.totalLiters)
+                                )
+                                .foregroundStyle(.cyan)
+                            }
+                            .chartXAxis {
+                                AxisMarks(values: .stride(by: .day, count: 7)) { value in
+                                    AxisGridLine()
+                                    AxisTick()
+                                    AxisValueLabel(format: .dateTime.month().day())
+                                }
+                            }
+                            .frame(height: 250)
+                            .padding()
+                            .background(Color(UIColor.systemBackground))
+                            .cornerRadius(12)
                         }
                     }
                 }
@@ -66,39 +110,46 @@ struct HidratacaoView: View {
         }
         .navigationTitle("Hidratação")
         .onAppear(perform: carregarDados)
-        .alert("Adicionar Quantidade", isPresented: $isShowingCustomAlert) {
+        .alert("Adicionar Quantidade", isPresented: $isShowingAlert) {
             TextField("Quantidade em ml", text: $customAmountString)
-                .keyboardType(.numberPad) // Facilita a digitação de números
-            Button("Cancelar", role: .cancel) {
-                customAmountString = "" // Limpa o campo ao cancelar
-            }
-            Button("Salvar") {
-                if let amountInML = Double(customAmountString) {
-                    let amountInLiters = amountInML / 1000.0
-                    adicionarAgua(litros: amountInLiters)
+                .keyboardType(.numberPad)
+            Button("Adicionar") {
+                if let ml = Double(customAmountString) {
+                    adicionarAgua(litros: ml / 1000)
                 }
-                customAmountString = "" // Limpa o campo após salvar
+                customAmountString = ""
+            }
+            Button("Cancelar", role: .cancel) {
+                customAmountString = ""
             }
         } message: {
-            Text("Por favor, informe a quantidade de água que você bebeu em mililitros (ml).")
+            Text("Insira a quantidade de água que bebeu.")
         }
     }
-    
+        
     private func carregarDados() {
+        // Carrega o consumo de hoje
         healthKitManager.fetchTodayWaterIntake { totalLitros in
             DispatchQueue.main.async {
                 self.aguaConsumida = totalLitros
             }
         }
+        
+        // Carrega o histórico para o gráfico
+        healthKitManager.fetchWaterIntakeHistory { dailyTotals in
+            DispatchQueue.main.async {
+                self.waterHistory = dailyTotals.map { WaterDataPoint(date: $0.key, totalLiters: $0.value) }.sorted(by: { $0.date < $1.date })
+            }
+        }
     }
-    
+        
     private func adicionarAgua(litros: Double) {
         healthKitManager.saveWaterIntake(liters: litros, date: Date()) { success in
             if success {
                 print("Água salva com sucesso!")
-                // Atualiza o valor na UI
+                // Recarrega todos os dados para atualizar tanto o card como o gráfico
                 DispatchQueue.main.async {
-                    self.aguaConsumida += litros
+                    self.carregarDados()
                 }
             } else {
                 print("Falha ao salvar a água.")
@@ -107,7 +158,7 @@ struct HidratacaoView: View {
     }
 }
 
-// MARK: - Componente Botão Reutilizável
+// O componente BotaoAdicionarAgua permanece o mesmo
 struct BotaoAdicionarAgua: View {
     let icone: String
     let volume: String
@@ -132,7 +183,6 @@ struct BotaoAdicionarAgua: View {
 
 struct HidratacaoView_Previews: PreviewProvider {
     static var previews: some View {
-        // Para a pré-visualização, mantemos o NavigationView aqui.
         NavigationView {
             HidratacaoView()
         }

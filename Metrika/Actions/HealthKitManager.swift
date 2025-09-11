@@ -10,14 +10,17 @@ class HealthKitManager: ObservableObject {
     
     /// Pede autorização ao utilizador para ler e escrever os dados de saúde necessários.
     func requestAuthorization(completion: @escaping (Bool) -> Void) {
-        // Tipos de dados que queremos ler
-        let typesToRead: Set = [
+        // Adicionamos os novos tipos de dados de atividade que queremos ler
+        let typesToRead: Set<HKObjectType> = [
             HKObjectType.quantityType(forIdentifier: .bodyMass)!,
-            HKObjectType.quantityType(forIdentifier: .dietaryWater)!
+            HKObjectType.quantityType(forIdentifier: .dietaryWater)!,
+            HKObjectType.quantityType(forIdentifier: .activeEnergyBurned)!,
+            HKObjectType.quantityType(forIdentifier: .appleExerciseTime)!,
+            HKObjectType.workoutType()
         ]
         
         // Tipos de dados que queremos escrever
-        let typesToWrite: Set = [
+        let typesToWrite: Set<HKSampleType> = [
             HKObjectType.quantityType(forIdentifier: .bodyMass)!,
             HKObjectType.quantityType(forIdentifier: .dietaryWater)!
         ]
@@ -33,9 +36,18 @@ class HealthKitManager: ObservableObject {
         }
     }
     
-    // MARK: - Funções de Leitura (Fetch)
+    // MARK: - Helper (FUNÇÃO CORRIGIDA)
     
-    /// Busca a última amostra de peso registada.
+    /// Cria um predicado (filtro) para buscar dados apenas do dia de hoje.
+    private func createTodayPredicate() -> NSPredicate {
+        let calendar = Calendar.current
+        let now = Date()
+        let startOfDay = calendar.startOfDay(for: now)
+        let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+        return HKQuery.predicateForSamples(withStart: startOfDay, end: endOfDay, options: .strictStartDate)
+    }
+    
+    // MARK: - Funções de Peso (sem alterações)
     func fetchLatestWeight(completion: @escaping (HKQuantitySample?) -> Void) {
         guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
             completion(nil)
@@ -50,26 +62,20 @@ class HealthKitManager: ObservableObject {
         healthStore.execute(query)
     }
     
-    /// Busca o total de água consumida no dia de hoje.
-    func fetchTodayWaterIntake(completion: @escaping (Double) -> Void) {
-        guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
-            completion(0)
+    func saveWeight(_ weightInKg: Double, date: Date, completion: @escaping (Bool) -> Void) {
+        guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
+            completion(false)
             return
         }
         
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let predicate = HKQuery.predicateForSamples(withStart: today, end: nil, options: .strictStartDate)
+        let weightQuantity = HKQuantity(unit: .gramUnit(with: .kilo), doubleValue: weightInKg)
+        let weightSample = HKQuantitySample(type: weightType, quantity: weightQuantity, start: date, end: date)
         
-        let query = HKStatisticsQuery(quantityType: waterType, quantitySamplePredicate: predicate, options: .cumulativeSum) { (_, result, error) in
-            let totalLitros = result?.sumQuantity()?.doubleValue(for: .liter()) ?? 0
-            completion(totalLitros)
+        healthStore.save(weightSample) { (success, error) in
+            completion(success)
         }
-        
-        healthStore.execute(query)
     }
     
-    /// Busca o histórico de amostras de peso dos últimos 30 dias.
     func fetchWeightHistory(completion: @escaping ([HKQuantitySample]) -> Void) {
         guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
             completion([])
@@ -92,7 +98,39 @@ class HealthKitManager: ObservableObject {
         healthStore.execute(query)
     }
     
-    /// Busca o histórico de consumo de água dos últimos 30 dias, agrupado por dia.
+    // MARK: - Funções de Hidratação (sem alterações)
+    func fetchTodayWaterIntake(completion: @escaping (Double) -> Void) {
+        guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
+            completion(0)
+            return
+        }
+        
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let predicate = HKQuery.predicateForSamples(withStart: today, end: nil, options: .strictStartDate)
+        
+        let query = HKStatisticsQuery(quantityType: waterType, quantitySamplePredicate: predicate, options: .cumulativeSum) { (_, result, error) in
+            let totalLitros = result?.sumQuantity()?.doubleValue(for: .liter()) ?? 0
+            completion(totalLitros)
+        }
+        
+        healthStore.execute(query)
+    }
+    
+    func saveWaterIntake(liters: Double, date: Date, completion: @escaping (Bool) -> Void) {
+        guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
+            completion(false)
+            return
+        }
+        
+        let waterQuantity = HKQuantity(unit: .liter(), doubleValue: liters)
+        let waterSample = HKQuantitySample(type: waterType, quantity: waterQuantity, start: date, end: date)
+        
+        healthStore.save(waterSample) { (success, error) in
+            completion(success)
+        }
+    }
+    
     func fetchWaterIntakeHistory(completion: @escaping ([Date: Double]) -> Void) {
         guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
             completion([:])
@@ -107,7 +145,6 @@ class HealthKitManager: ObservableObject {
         }
 
         var dailyTotals: [Date: Double] = [:]
-        // Inicializa os dias para garantir que os dias sem consumo apareçam
         for i in 0..<30 {
             if let date = calendar.date(byAdding: .day, value: i, to: startDate) {
                 dailyTotals[date] = 0.0
@@ -122,7 +159,6 @@ class HealthKitManager: ObservableObject {
                 return
             }
             
-            // Agrupa as amostras por dia
             for sample in samples {
                 let date = calendar.startOfDay(for: sample.startDate)
                 let value = sample.quantity.doubleValue(for: .liter())
@@ -135,36 +171,86 @@ class HealthKitManager: ObservableObject {
         healthStore.execute(query)
     }
     
-    // MARK: - Funções de Escrita (Save)
+    // MARK: - Funções de Atividade
+    
+    /// Busca o total de calorias ativas queimadas no dia de hoje.
+    func fetchTodayActiveEnergy(completion: @escaping (Double) -> Void) {
+        guard let activeEnergyType = HKObjectType.quantityType(forIdentifier: .activeEnergyBurned) else {
+            completion(0)
+            return
+        }
 
-    /// Salva um novo registo de peso no HealthKit.
-    func saveWeight(_ weightInKg: Double, date: Date, completion: @escaping (Bool) -> Void) {
-        guard let weightType = HKObjectType.quantityType(forIdentifier: .bodyMass) else {
-            completion(false)
+        let predicate = createTodayPredicate()
+        let query = HKStatisticsQuery(quantityType: activeEnergyType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, result, _ in
+            guard let result = result, let sum = result.sumQuantity() else {
+                completion(0)
+                return
+            }
+            let calories = sum.doubleValue(for: .kilocalorie())
+            completion(calories)
+        }
+        healthStore.execute(query)
+    }
+
+    /// Busca o total de minutos de exercício no dia de hoje.
+    func fetchTodayExerciseTime(completion: @escaping (Double) -> Void) {
+        guard let exerciseTimeType = HKObjectType.quantityType(forIdentifier: .appleExerciseTime) else {
+            completion(0)
+            return
+        }
+
+        let predicate = createTodayPredicate()
+        let query = HKStatisticsQuery(quantityType: exerciseTimeType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, result, _ in
+            guard let result = result, let sum = result.sumQuantity() else {
+                completion(0)
+                return
+            }
+            let minutes = sum.doubleValue(for: .minute())
+            completion(minutes)
+        }
+        healthStore.execute(query)
+    }
+
+    /// Busca os treinos registrados nos últimos 7 dias.
+    func fetchWorkoutsForLastWeek(completion: @escaping ([HKWorkout]) -> Void) {
+        let workoutType = HKObjectType.workoutType()
+        
+        let calendar = Calendar.current
+        let endDate = Date()
+        guard let startDate = calendar.date(byAdding: .day, value: -7, to: endDate) else {
+            completion([])
             return
         }
         
-        let weightQuantity = HKQuantity(unit: .gramUnit(with: .kilo), doubleValue: weightInKg)
-        let weightSample = HKQuantitySample(type: weightType, quantity: weightQuantity, start: date, end: date)
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
+        let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
         
-        healthStore.save(weightSample) { (success, error) in
-            completion(success)
+        let query = HKSampleQuery(sampleType: workoutType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sortDescriptor]) { _, samples, _ in
+            guard let workouts = samples as? [HKWorkout] else {
+                completion([])
+                return
+            }
+            completion(workouts)
         }
+        healthStore.execute(query)
     }
     
-    /// Salva um novo registo de consumo de água no HealthKit.
-    func saveWaterIntake(liters: Double, date: Date, completion: @escaping (Bool) -> Void) {
-        guard let waterType = HKObjectType.quantityType(forIdentifier: .dietaryWater) else {
-            completion(false)
+    /// **(NOVA FUNÇÃO)** Busca as calorias para um treino específico.
+    func fetchEnergyForWorkout(_ workout: HKWorkout, completion: @escaping (Double) -> Void) {
+        guard let energyType = HKObjectType.quantityType(forIdentifier: .activeEnergyBurned) else {
+            completion(0)
             return
         }
         
-        let waterQuantity = HKQuantity(unit: .liter(), doubleValue: liters)
-        let waterSample = HKQuantitySample(type: waterType, quantity: waterQuantity, start: date, end: date)
-        
-        healthStore.save(waterSample) { (success, error) in
-            completion(success)
+        let predicate = HKQuery.predicateForObjects(from: workout)
+        let query = HKStatisticsQuery(quantityType: energyType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, result, _ in
+            guard let result = result, let sum = result.sumQuantity() else {
+                completion(0)
+                return
+            }
+            completion(sum.doubleValue(for: .kilocalorie()))
         }
+        healthStore.execute(query)
     }
 }
 

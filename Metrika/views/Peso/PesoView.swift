@@ -1,6 +1,8 @@
 import SwiftUI
 import Vision
 import UIKit
+import Charts // Adicionado para os gráficos
+import HealthKit // Adicionado para os tipos de dados
 
 struct PesoView: View {
     @StateObject private var healthKitManager = HealthKitManager()
@@ -8,6 +10,7 @@ struct PesoView: View {
     // Estados para a UI
     @State private var pesoValor: String = "---"
     @State private var pesoData: String = "A carregar..."
+    @State private var weightHistory: [HKQuantitySample] = [] // Para o gráfico
     
     // Estados para controlar o fluxo da câmara
     @State private var isShowingCamera = false
@@ -22,6 +25,50 @@ struct PesoView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     PesoCardView(peso: $pesoValor, data: $pesoData)
+                    
+                    // GRÁFICO DE PESO MOVIDO PARA AQUI
+                    VStack(alignment: .leading) {
+                        Text("Evolução do Peso (Últimos 30 dias)")
+                            .font(.headline)
+                            .padding(.horizontal)
+                        
+                        if weightHistory.isEmpty {
+                            Text("Não há dados de peso para exibir.")
+                                .foregroundColor(.gray)
+                                .padding()
+                                .frame(maxWidth: .infinity, minHeight: 200)
+                                .background(Color(UIColor.systemBackground))
+                                .cornerRadius(12)
+                        } else {
+                            Chart(weightHistory, id: \.uuid) { sample in
+                                let date = sample.startDate
+                                let weight = sample.quantity.doubleValue(for: .gramUnit(with: .kilo))
+                                
+                                LineMark(
+                                    x: .value("Data", date, unit: .day),
+                                    y: .value("Peso (kg)", weight)
+                                )
+                                .foregroundStyle(.blue)
+                                
+                                PointMark(
+                                    x: .value("Data", date, unit: .day),
+                                    y: .value("Peso (kg)", weight)
+                                )
+                                .foregroundStyle(.blue)
+                            }
+                            .chartXAxis {
+                                AxisMarks(values: .stride(by: .day, count: 7)) { value in
+                                    AxisGridLine()
+                                    AxisTick()
+                                    AxisValueLabel(format: .dateTime.month().day())
+                                }
+                            }
+                            .frame(height: 250)
+                            .padding()
+                            .background(Color(UIColor.systemBackground))
+                            .cornerRadius(12)
+                        }
+                    }
                 }
                 .padding()
             }
@@ -59,6 +106,7 @@ struct PesoView: View {
     
     // MARK: - Funções de Dados
     private func carregarDadosDeSaude() {
+        // Carrega o último peso para o card
         healthKitManager.fetchLatestWeight { sample in
             guard let sample = sample else {
                 DispatchQueue.main.async {
@@ -76,9 +124,16 @@ struct PesoView: View {
                 self.pesoData = formattedDate
             }
         }
+        
+        // Carrega o histórico de peso para o gráfico
+        healthKitManager.fetchWeightHistory { samples in
+            DispatchQueue.main.async {
+                self.weightHistory = samples
+            }
+        }
     }
     
-    // MARK: - Lógica da Câmara e Vision
+    // MARK: - Lógica da Câmara e Vision (sem alterações)
     private func processImage(_ image: UIImage) {
         guard let cgImage = image.cgImage else { return }
         
@@ -146,3 +201,4 @@ struct PesoView_Previews: PreviewProvider {
         }
     }
 }
+
